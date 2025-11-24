@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>FortBuild — Mini Build & Shoot (HTML5)</title>
+<style>
+  :root{--bg:#0f1724;--panel:#0b1220;--accent:#10b981;--muted:#94a3b8}
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#dbe7ff;background:var(--bg)}
+  #gameWrap{display:flex;gap:12px;padding:12px}
+  canvas{background:linear-gradient(180deg,#0b1220 0%, #071029 100%);border-radius:10px;box-shadow:0 6px 30px rgba(2,6,23,0.7)}
+  #ui{width:320px;min-width:220px}
+  .panel{background:linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01));padding:12px;border-radius:10px;color:var(--muted);}
+  h1{font-size:18px;margin:0;color:#fff}
+  button{background:var(--panel);border:1px solid rgba(255,255,255,0.03);color:var(--muted);padding:8px 10px;border-radius:8px;cursor:pointer}
+  .stat{display:flex;justify-content:space-between;padding:6px 0;font-size:13px}
+  .center{display:flex;align-items:center;gap:8px}
+  #lootList{display:flex;flex-wrap:wrap;gap:6px}
+  .loot{background:#07162a;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.03)}
+  .small{font-size:12px}
+  #instructions{font-size:13px;color:var(--muted);}
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="game" width="1024" height="640"></canvas>
+  <div id="ui">
+    <div class="panel">
+      <h1>FortBuild — Mini Build & Shoot</h1>
+      <p class="small" id="instructions">Top-down arena with building, editing, chests and loot. Medium-complex demo suitable for GitHub Pages.</p>
+      <div class="stat"><div>Health</div><div id="hp">100</div></div>
+      <div class="stat"><div>Armor</div><div id="armor">0</div></div>
+      <div class="stat"><div>Ammo</div><div id="ammo">---</div></div>
+      <div class="stat"><div>Blocks</div><div id="blocks">0</div></div>
+      <div style="margin-top:8px"></div>
+      <div style="display:flex;gap:8px;margin-top:8px"><button id="respawn">Respawn</button><button id="toggleBots">Toggle Bots</button></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center"><div class="small">Inventory</div><div class="small" id="gold">Gold: 0</div></div>
+      <div id="lootList" style="margin-top:8px"></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="small">Controls</div>
+      <ul class="small">
+        <li>WASD - Move</li>
+        <li>Mouse - Aim</li>
+        <li>Left Click - Shoot</li>
+        <li>E - Place block under cursor</li>
+        <li>R - Remove block under cursor</li>
+        <li>F - Open chest / Interact</li>
+        <li>Q - Cycle building material</li>
+      </ul>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="small">How to publish</div>
+      <ol class="small">
+        <li>Create new GitHub repo, add this HTML as <code>index.html</code>.</li>
+        <li>Enable GitHub Pages in repo settings (main branch / root).</li>
+        <li>Open the page URL to play online.</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<script>
+// FortBuild — single-file prototype
+// Medium/complex: map, player, shooting, blocks, chests, loot, simple bots
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// state
+let keys = {};
+let mouse = {x:0,y:0,down:false};
+let player;
+let bullets = [];
+let blocks = []; // built blocks
+let chests = [];
+let bots = [];
+let lootInventory = [];
+let gold = 0;
+let enableBots = true;
+
+// constants
+const TILE = 32;
+const MAP_W = Math.floor(W/TILE);
+const MAP_H = Math.floor(H/TILE);
+
+// utilities
+function randInt(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+function dist(a,b){const dx=a.x-b.x,dy=a.y-b.y;return Math.hypot(dx,dy)}
+
+// player
+function createPlayer(){
+  player = {
+    x: W/2, y: H/2,
+    vx:0, vy:0, speed: 160, // px/sec
+    hp:100, armor:0,
+    fireRate: 300, lastFire:0,
+    weapon: {name:'Pistol', dmg:12, mag:12, magMax:12, reloadTime:900, type:'bullet'},
+    blocksLeft: 40
+  };
+}
+
+// basic map border blocks for visual
+function initBlocks(){
+  blocks = [];
+  // ground obstacles
+  for(let i=0;i<30;i++){
+    blocks.push({x:randInt(2,MAP_W-3), y:randInt(2,MAP_H-3), w:1, h:1, type:'wood'});
+  }
+}
+
+// chests
+function spawnChest(){
+  const c = {x:randInt(2,MAP_W-3)*TILE+TILE/2, y:randInt(2,MAP_H-3)*TILE+TILE/2, open:false, blink:0};
+  chests.push(c);
+}
+
+// bots
+function spawnBot(){
+  const b = {x:randInt(1,MAP_W-2)*TILE+8, y:randInt(1,MAP_H-2)*TILE+8, hp:30, vx:0, vy:0, lastShot:0};
+  bots.push(b);
+}
+
+// input
+window.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true});
+window.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top});
+canvas.addEventListener('mousedown',e=>{mouse.down=true});
+canvas.addEventListener('mouseup',e=>{mouse.down=false});
+
+// controls
+window.addEventListener('keypress',e=>{
+  if(e.key==='e') placeBlockAtCursor();
+  if(e.key==='r') removeBlockAtCursor();
+  if(e.key==='f') interact();
+  if(e.key==='q') cycleMaterial();
+});
+
+function cycleMaterial(){ /* placeholder for material types */ }
+
+function placeBlockAtCursor(){
+  if(player.blocksLeft<=0) return;
+  const gx = Math.floor(mouse.x/TILE), gy = Math.floor(mouse.y/TILE);
+  // don't place on player
+  const px = Math.floor(player.x/TILE), py = Math.floor(player.y/TILE);
+  if(gx===px && gy===py) return;
+  // check overlap
+  for(const b of blocks) if(b.x===gx && b.y===gy) return;
+  blocks.push({x:gx,y:gy,w:1,h:1,type:'wood'});
+  player.blocksLeft--;
+  updateUI();
+}
+
+function removeBlockAtCursor(){
+  const gx = Math.floor(mouse.x/TILE), gy = Math.floor(mouse.y/TILE);
+  for(let i=0;i<blocks.length;i++){
+    if(blocks[i].x===gx && blocks[i].y===gy){
+      blocks.splice(i,1);
+      player.blocksLeft++;
+      updateUI();
+      return;
+    }
+  }
+}
+
+function interact(){
+  // open nearby chest
+  for(const c of chests){
+    if(!c.open && Math.hypot(c.x-player.x,c.y-player.y)<48){
+      openChest(c);
+      return;
+    }
+  }
+}
+
+function openChest(c){
+  c.open = true;
+  // random loot table
+  const r = Math.random();
+  if(r<0.4){ // weapon
+    const gun = {name:'SMG', dmg:8, mag:30, magMax:30, reloadTime:1200};
+    player.weapon = Object.assign({},gun);
+    lootInventory.push('SMG');
+  } else if(r<0.7){ // ammo and gold
+    gold += randInt(10,40);
+    player.weapon.mag = Math.min(player.weapon.mag + randInt(4,12), player.weapon.magMax);
+    lootInventory.push('Ammo');
+  } else if(r<0.9){ // shield
+    player.armor = Math.min(100, player.armor + randInt(15,40));
+    lootInventory.push('Shield');
+  } else { // building mats
+    player.blocksLeft += randInt(5,15);
+    lootInventory.push('Mats');
+  }
+  updateUI();
+}
+
+// shooting
+function tryShoot(now){
+  if(mouse.down && now - player.lastFire > player.fireRate){
+    if(player.weapon.mag<=0) return; // no ammo
+    player.lastFire = now;
+    player.weapon.mag -= 1;
+    const angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+    const speed = 420;
+    bullets.push({x:player.x, y:player.y, vx:Math.cos(angle)*speed, vy:Math.sin(angle)*speed, dmg:player.weapon.dmg, life:2});
+    updateUI();
+  }
+}
+
+// physics & update
+let last = performance.now();
+function update(now){
+  const dt = Math.min(0.05,(now-last)/1000);
+  last = now;
+
+  // movement
+  let mx=0,my=0;
+  if(keys['w']) my-=1; if(keys['s']) my+=1; if(keys['a']) mx-=1; if(keys['d']) mx+=1;
+  const len = Math.hypot(mx,my) || 1;
+  player.vx = (mx/len)*player.speed;
+  player.vy = (my/len)*player.speed;
+  player.x += player.vx*dt; player.y += player.vy*dt;
+  // clamp
+  player.x = Math.max(16,Math.min(W-16,player.x)); player.y = Math.max(16,Math.min(H-16,player.y));
+
+  // bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b = bullets[i];
+    b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
+    // hit bots
+    let removed=false;
+    for(const bot of bots){
+      if(bot.hp>0 && Math.hypot(bot.x-b.x, bot.y-b.y)<14){ bot.hp -= b.dmg; bullets.splice(i,1); removed=true; break; }
+    }
+    if(removed) continue;
+    if(b.x<0||b.x>W||b.y<0||b.y>H||b.life<=0) bullets.splice(i,1);
+  }
+
+  // bots AI
+  if(enableBots){
+    for(const bot of bots){
+      // simple follow player
+      const dx = player.x - bot.x, dy = player.y - bot.y; const d = Math.hypot(dx,dy);
+      if(d>10){ bot.vx = (dx/d)*60; bot.vy = (dy/d)*60; }
+      else { bot.vx=0; bot.vy=0; }
+      bot.x += bot.vx*dt; bot.y += bot.vy*dt;
+      // bot shooting
+      if(now - bot.lastShot > 900 && d<400){
+        bot.lastShot = now;
+        const angle = Math.atan2(player.y-bot.y, player.x-bot.x);
+        bullets.push({x:bot.x,y:bot.y,vx:Math.cos(angle)*260,vy:Math.sin(angle)*260,dmg:8,life:2});
+      }
+      // bot collision with player
+      if(Math.hypot(bot.x-player.x, bot.y-player.y)<18){ player.hp -= 8*dt; }
+    }
+  }
+
+  // bullets hitting player
+  for(let i=bullets.length-1;i>=0;i--){
+    const b = bullets[i];
+    if(b.dmg && Math.hypot(b.x-player.x,b.y-player.y)<12){
+      // apply damage to armor first
+      let dmg = b.dmg;
+      if(player.armor>0){ const take = Math.min(player.armor, dmg); player.armor -= take; dmg -= take; }
+      player.hp -= dmg; bullets.splice(i,1);
+    }
+  }
+
+  // chests blinking
+  for(const c of chests){ c.blink = (c.blink + dt*2) % 2; }
+
+  // respawn if dead
+  if(player.hp<=0){ /* player dead, pinned until respawn */ }
+
+  tryShoot(now);
+}
+
+// render
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.02)';
+  for(let x=0;x<=W;x+=TILE){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for(let y=0;y<=H;y+=TILE){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  ctx.restore();
+
+  // blocks
+  for(const b of blocks){
+    ctx.fillStyle = '#5b3e2b';
+    ctx.fillRect(b.x*TILE+2, b.y*TILE+2, TILE-4, TILE-4);
+    ctx.strokeStyle='rgba(0,0,0,0.2)'; ctx.strokeRect(b.x*TILE+2, b.y*TILE+2, TILE-4, TILE-4);
+  }
+
+  // chests
+  for(const c of chests){
+    ctx.save(); ctx.translate(c.x,c.y);
+    ctx.fillStyle = c.open ? '#444' : (c.blink>1 ? '#ffd166' : '#ffb703');
+    ctx.fillRect(-12,-10,24,20);
+    ctx.fillStyle='#7c3aed'; ctx.fillRect(-10,-6,20,4);
+    ctx.restore();
+  }
+
+  // bots
+  for(const b of bots){
+    ctx.beginPath(); ctx.arc(b.x,b.y,10,0,Math.PI*2); ctx.fillStyle='#ff6b6b'; ctx.fill();
+    // health bar
+    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(b.x-14,b.y-18,28,5);
+    ctx.fillStyle='#0ea5a4'; ctx.fillRect(b.x-14,b.y-18,28*(Math.max(0,b.hp)/30),5);
+  }
+
+  // bullets
+  for(const b of bullets){ ctx.beginPath(); ctx.arc(b.x,b.y,3,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill(); }
+
+  // player
+  ctx.save(); ctx.translate(player.x,player.y);
+  // facing
+  const ang = Math.atan2(mouse.y-player.y, mouse.x-player.x);
+  ctx.rotate(ang);
+  // body
+  ctx.fillStyle='#3b82f6'; ctx.fillRect(-10,-10,20,20);
+  // gun
+  ctx.fillStyle='#111827'; ctx.fillRect(6,-4,14,8);
+  ctx.restore();
+
+  // HUD crosshair
+  ctx.beginPath(); ctx.arc(mouse.x,mouse.y,6,0,Math.PI*2); ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.stroke();
+
+  // info overlay
+  ctx.fillStyle='rgba(255,255,255,0.06)'; ctx.fillRect(8,H-44,240,36);
+  ctx.fillStyle='#fff'; ctx.font='14px sans-serif'; ctx.fillText('HP: '+Math.max(0,Math.floor(player.hp)), 16, H-20);
+  ctx.fillText('Armor: '+Math.floor(player.armor), 96, H-20);
+  ctx.fillText('Blocks: '+player.blocksLeft, 180, H-20);
+}
+
+function loop(now){ update(now); draw(); requestAnimationFrame(loop); }
+
+// UI
+function updateUI(){
+  document.getElementById('hp').innerText = Math.max(0,Math.floor(player.hp));
+  document.getElementById('armor').innerText = Math.floor(player.armor);
+  document.getElementById('ammo').innerText = (player.weapon.mag!==undefined? player.weapon.mag + ' / ' + player.weapon.magMax : '---');
+  document.getElementById('blocks').innerText = player.blocksLeft;
+  document.getElementById('gold').innerText = 'Gold: ' + gold;
+  const lootDiv = document.getElementById('lootList'); lootDiv.innerHTML='';
+  for(const it of lootInventory.slice(-8).reverse()){ const el=document.createElement('div'); el.className='loot small'; el.innerText=it; lootDiv.appendChild(el); }
+}
+
+// buttons
+document.getElementById('respawn').addEventListener('click',()=>{ createPlayer(); updateUI(); });
+document.getElementById('toggleBots').addEventListener('click',()=>{ enableBots=!enableBots; document.getElementById('toggleBots').innerText = enableBots ? 'Disable Bots' : 'Enable Bots'; });
+
+// init
+createPlayer(); initBlocks(); for(let i=0;i<4;i++) spawnChest(); for(let i=0;i<4;i++) spawnBot(); updateUI(); requestAnimationFrame(loop);
+
+// helpful hint: allow clicking to lock pointer for better aim
+canvas.addEventListener('click', ()=> { canvas.requestPointerLock?.(); });
+
+// prevent context menu
+window.addEventListener('contextmenu',e=>e.preventDefault());
+
+</script>
+</body>
+</html>
